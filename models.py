@@ -76,7 +76,7 @@ class Model(nn.Module):
         a1s=[]
 
         # 加入<bos>去掉<eos> bos_id=0
-        temp_y = torch.cat([torch.zeros((y.shape[0],), device=device), y[:, :-1]])
+        temp_y = torch.cat([torch.zeros((y.shape[0],1), dtype=torch.long, device=device), y[:, :-1]], dim=-1)
         one_hot = torch.zeros(y.shape+(self.vocab_size,), device=device).scatter(-1, temp_y.unsqueeze(-1), 1)
 
         # decoder-1与attention计算
