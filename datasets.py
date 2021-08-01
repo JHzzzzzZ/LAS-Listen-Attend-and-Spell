@@ -9,6 +9,11 @@ from memory_profiler import profile
 import pickle
 
 def count_txt(txt_paths):
+    '''
+    统计标签的特征
+    :param txt_paths:[list] 标签的路径
+    :return: None
+    '''
     mn=1000000
     mx=-1
     avg=0
@@ -32,6 +37,11 @@ def count_txt(txt_paths):
 
 
 def count_feature(wav_paths):
+    '''
+    统计wav的特征
+    :param wav_paths:[list] wav文件列表
+    :return: None
+    '''
     mn=1000000
     mx=-1
     avg=0
@@ -40,6 +50,8 @@ def count_feature(wav_paths):
     for file in tqdm(wav_paths):
         wave_form, sample_freq=ta.load(file)
         # length=ta.compliance.kaldi.mfcc(wave_form, sample_frequency=sample_freq).shape[0]
+
+        # mfcc的长度大致是wave_form的长度除以160
         length=wave_form.shape[1]//160
         mx=max(mx, length)
         d[length]=d.get(length, 0)+1
@@ -52,7 +64,15 @@ def count_feature(wav_paths):
     plt.show()
 
 class Data(Dataset):
-    def __init__(self, wav_paths, txt_paths, train=True, vocab=None, save_path='./words_vocab_label.pkl'):
+    def __init__(self, wav_paths, txt_paths, train=True, vocab=None, save_path='./vocab_label.pkl'):
+        '''
+        数据集初始化与标签读取
+        :param wav_paths:[list] wav文件列表
+        :param txt_paths:[list] txt文件列表 顺序应该与wav文件一致
+        :param train:[bool] 训练集还是验证集
+        :param vocab:Union[None, dict] 如果train=True, 则vocab=None, 如果train=False，则vocab=train_dataset.vocab
+        :param save_path:[str] 保存训练集的已经读取的文件与标签
+        '''
         super().__init__()
 
         assert train or vocab is not None, 'validation时需要传入vocab'
@@ -62,7 +82,7 @@ class Data(Dataset):
 
         if train and os.path.exists(save_path):
             with open(save_path, 'rb') as f:
-                self.words, self.vocab, self.labels=pickle.load(f)
+                self.vocab, self.labels=pickle.load(f)
         else:
             lines=[]
             self.words=[]
@@ -87,38 +107,55 @@ class Data(Dataset):
 
             if train:
                 with open(save_path, 'wb') as f:
-                    pickle.dump([self.words, self.vocab, self.labels], f)
+                    pickle.dump([self.vocab, self.labels], f)
         assert len(self.labels)==len(self.wav_paths), '%s %s'%(len(self.labels), len(self.wav_paths))
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
+        '''
+        返回acoustic feature与对应标签
+        :param idx:[int] 索引
+        :return:(feature, label)
+        '''
+        # 读取wav文件
         wave_form, sample_freq = ta.load(self.wav_paths[idx])
 
+        # 计算MFCC特征与其delta特征
         MFCC = ta.compliance.kaldi.mfcc(wave_form, sample_frequency=sample_freq)
         d1 = ta.functional.compute_deltas(MFCC)
         d2 = ta.functional.compute_deltas(d1)
 
+        # 拼接在一起  (L, 39)
         feature = torch.cat([MFCC, d1, d2], dim=-1)
 
+        # Normalize acoustic feature
         feature=(feature-feature.mean())/(feature.std()+1e-10)
 
         return feature, self.labels[idx]
 
 def collate_fn(dim):
     def pack(batch):
+        '''
+        dataloader的收集函数，用于生成一个batch。在此主要作用为padding
+        :param batch: [list([feature, label])]
+        :return: batch好的torch tensor
+        '''
+        # 计算feature与label的最大长度
         ml = max([each[0].shape[0] for each in batch])
         ml_label = max([len(each[1]) for each in batch])
 
+        # 计算feature与label应该pad的长度
         pad_size=[ml-each[0].shape[0] for each in batch]
         lb_pad_size=[ml_label-len(each[1]) for each in batch]
 
         x=[]
         y=[]
+        # 标记是否被pad，pad不参与loss与acc计算
         pad_map=[]
+        # pad
         for i in range(len(batch)):
-            # print(len(pad_size), i)
             x.append(torch.cat([batch[i][0], torch.zeros(pad_size[i],batch[i][0].shape[-1])],dim=dim-1))
             y.append(batch[i][1]+[1]+[2]*(lb_pad_size[i]))
             pad_map.append([1]*(len(batch[i][1])+1)+[0]*(lb_pad_size[i]))
