@@ -6,5 +6,5 @@
     decoder: 两层LSTM+Linear
     
 ### dataset
-    Free ST Chinese Mandarin Corpus:https://openslr.magicdatatech.com/resources/38/ST-CMDS-20170001_1-OS.tar.gz
+    ST-CMDS-20170001_1, Free ST Chinese Mandarin Corpus:https://openslr.magicdatatech.com/resources/38/ST-CMDS-20170001_1-OS.tar.gz
 
