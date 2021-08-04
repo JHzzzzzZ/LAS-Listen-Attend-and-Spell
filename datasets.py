@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader, Dataset
 import torch
 import os
 from tqdm import tqdm
-from memory_profiler import profile
 import pickle
 
 def count_txt(txt_paths):
@@ -64,7 +63,8 @@ def count_feature(wav_paths):
     plt.show()
 
 class Data(Dataset):
-    def __init__(self, wav_paths, txt_paths, train=True, vocab=None, save_path='./vocab_label.pkl'):
+    def __init__(self, wav_paths, txt_paths, train=True, vocab=None, save_path='./vocab_label.pkl',
+                 num_data=100, feature_save_path='./data'):
         '''
         数据集初始化与标签读取
         :param wav_paths:[list] wav文件列表
@@ -79,6 +79,9 @@ class Data(Dataset):
 
         self.wav_paths=wav_paths
         self.txt_paths=txt_paths
+        self.num_data=num_data
+        self.feature_save_path=feature_save_path
+        self.train=train
 
         if train and os.path.exists(save_path):
             with open(save_path, 'rb') as f:
@@ -109,6 +112,10 @@ class Data(Dataset):
                 with open(save_path, 'wb') as f:
                     pickle.dump([self.vocab, self.labels], f)
         assert len(self.labels)==len(self.wav_paths), '%s %s'%(len(self.labels), len(self.wav_paths))
+        self.data=[]
+        self.s=0
+        self.idx=[]
+        # self.load_data_in_one_time()
 
     def __len__(self):
         return len(self.labels)
@@ -119,21 +126,79 @@ class Data(Dataset):
         :param idx:[int] 索引
         :return:(feature, label)
         '''
-        # 读取wav文件
-        wave_form, sample_freq = ta.load(self.wav_paths[idx])
 
-        # 计算MFCC特征与其delta特征
-        MFCC = ta.compliance.kaldi.mfcc(wave_form, sample_frequency=sample_freq)
-        d1 = ta.functional.compute_deltas(MFCC)
-        d2 = ta.functional.compute_deltas(d1)
+        # 分段load
+        if idx==0:
+            self.s=0
+        if idx >= self.s:
+            self.load_data(self.wav_paths[self.s:min(self.s+self.num_data, len(self.wav_paths))])
+            self.s+=self.num_data
 
-        # 拼接在一起  (L, 39)
-        feature = torch.cat([MFCC, d1, d2], dim=-1)
+        i=idx-self.s+self.num_data
+        # print(i, idx, self.s, len(self.data))
+        # 逆序
+        # return self.data[self.idx[idx][0]-self.s+self.num_data], self.labels[self.idx[idx][0]]
+        # 伪随机
+        return self.data[i], self.labels[idx]
 
-        # Normalize acoustic feature
-        feature=(feature-feature.mean())/(feature.std()+1e-10)
+        # load_data_in_one_time 用这一行
+        # return self.data[idx], self.labels[idx]
 
-        return feature, self.labels[idx]
+    def load_data_in_one_time(self):
+        for s in tqdm(range(0, len(self), self.num_data)):
+            if self.train:
+                file = os.path.join(self.feature_save_path, '%3d-%3d.dat' % (s, s + self.num_data))
+            else:
+                file = os.path.join(self.feature_save_path, 'val_%3d-%3d.dat' % (s, s + self.num_data))
+
+            with open(file, 'rb') as f:
+                data, idx=pickle.load(f)
+            self.data.extend(data)
+            self.idx.extend(idx)
+            self.s+=self.num_data
+
+        assert len(self.labels)==len(self.data), '%d %d'%(len(self.labels), (len(self.data)))
+
+    def load_data(self, paths):
+        self.data=[]
+        self.idx=[]
+        if self.train:
+            file = os.path.join(self.feature_save_path, '%3d-%3d.dat'%(self.s, self.s+self.num_data))
+        else:
+            file = os.path.join(self.feature_save_path, 'val_%3d-%3d.dat' % (self.s, self.s + self.num_data))
+
+        if os.path.exists(file):
+            with open(file, 'rb') as f:
+                self.data, self.idx=pickle.load(f)
+            return
+
+        for i, p in tqdm(enumerate(paths)):
+            # 读取wav文件
+            wave_form, sample_freq = ta.load(p)
+
+            # 计算fbank特征与其delta特征
+            MFCC = ta.compliance.kaldi.fbank(wave_form, sample_frequency=sample_freq, num_mel_bins=40)
+            d1 = ta.functional.compute_deltas(MFCC)
+            d2 = ta.functional.compute_deltas(d1)
+
+            # 拼接在一起  (L, 39)
+            feature = torch.cat([MFCC, d1, d2], dim=-1)
+
+            # Normalize acoustic feature
+            feature = (feature - feature.mean(dim=0)) / (feature.std(dim=0) + 1e-10)
+
+            self.data.append(feature)
+            self.idx.append((self.s+i, feature.shape[0]))
+
+        # self.idx.sort(key=lambda x:x[1], reverse=True)
+        assert (self.s+self.num_data) > len(self.labels) or \
+               len(self.data)==len(self.idx)==self.num_data, '%s %s %s'%\
+                                                          (len(self.data),len(self.idx),self.num_data)
+
+        with open(file, 'wb') as f:
+            pickle.dump([self.data, self.idx], f)
+
+
 
 def collate_fn(dim):
     def pack(batch):
@@ -181,19 +246,29 @@ if __name__ == '__main__':
         elif each[-4:]=='.txt':
             txt_paths.append('../datasets/ST-CMDS-20170001_1-OS/' + each)
 
-    print(wav_paths[:5])
-    print(txt_paths[:5])
+    # print(wav_paths[:5])
+    # print(txt_paths[:5])
 
     # count_txt(txt_paths)
     # count_feature(wav_paths)
-    # dataset=Data(wav_paths[:10], txt_paths[:10])
-
-    # dl=get_dataloader(dataset, 2, False)
-    # print(len(dataset))
-    # for x,y,z in dl:
-    #     print(x.shape)
-    #     print(y.shape)
-    #     print(z.shape)
+    splits=412*240
+    dataset = Data(wav_paths[:splits], txt_paths[:splits], num_data=1024)
+    # dataset=Data(wav_paths[splits:], txt_paths[splits:], train=False,
+    #              num_data=1024, vocab=dataset.vocab)
+    #
+    dl=get_dataloader(dataset, 64, False)
+    print(len(dataset))
+    # i=0
+    for _ in range(2):
+        dd = tqdm(dl)
+        for x,y,z in dd:
+            # print(i, end=' ')
+            # i+=1
+            pass
+            # break
+            # print(x.shape)
+            # print(y.shape)
+            # print(z.shape)
 
     # wave_form, sample_freq = ta.load(r'D:\PyPro\datasets\ST-CMDS-20170001_1-OS\20170001P00001A0001.wav')
     #
