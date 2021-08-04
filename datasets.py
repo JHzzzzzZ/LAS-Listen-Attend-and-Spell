@@ -6,6 +6,8 @@ import torch
 import os
 from tqdm import tqdm
 import pickle
+import audiomentations
+import h5py
 
 def count_txt(txt_paths):
     '''
@@ -29,7 +31,7 @@ def count_txt(txt_paths):
                     mn=min(mn, length)
                     avg+=length
                     c+=1
-                del line
+
     print(f'最长句子长度：{mx}, 最短句子长度：{mn}, 平均句子长度：{avg/c}')
     plt.bar(d.keys(), d.values())
     plt.show()
@@ -57,7 +59,7 @@ def count_feature(wav_paths):
         mn = min(mn, length)
         avg+=length
         c+=1
-        del wave_form, sample_freq, length
+
     print(f'最长语音特征长度：{mx}, 最短语音特征长度：{mn}, 平均语音特征长度：{avg/c}')
     plt.bar(d.keys(), d.values())
     plt.show()
@@ -82,6 +84,13 @@ class Data(Dataset):
         self.num_data=num_data
         self.feature_save_path=feature_save_path
         self.train=train
+
+        self.augment = audiomentations.Compose([
+                audiomentations.AddGaussianNoise(),
+                audiomentations.TimeStretch(), # 对时间维度调整
+                audiomentations.PitchShift(), # 对音调调整
+                audiomentations.Shift(), # 在时间轴的滚动，主要是用到np.roll()函数
+            ])
 
         if train and os.path.exists(save_path):
             with open(save_path, 'rb') as f:
@@ -126,7 +135,6 @@ class Data(Dataset):
         :param idx:[int] 索引
         :return:(feature, label)
         '''
-
         # 分段load
         if idx==0:
             self.s=0
@@ -147,9 +155,9 @@ class Data(Dataset):
     def load_data_in_one_time(self):
         for s in tqdm(range(0, len(self), self.num_data)):
             if self.train:
-                file = os.path.join(self.feature_save_path, '%3d-%3d.dat' % (s, s + self.num_data))
+                file = os.path.join(self.feature_save_path, '%3d-%3d.h5' % (s, s + self.num_data))
             else:
-                file = os.path.join(self.feature_save_path, 'val_%3d-%3d.dat' % (s, s + self.num_data))
+                file = os.path.join(self.feature_save_path, 'val_%3d-%3d.h5' % (s, s + self.num_data))
 
             with open(file, 'rb') as f:
                 data, idx=pickle.load(f)
@@ -159,30 +167,60 @@ class Data(Dataset):
 
         assert len(self.labels)==len(self.data), '%d %d'%(len(self.labels), (len(self.data)))
 
+    def h5save(self, filename, **kwargs):
+        with h5py.File(filename, 'w') as f:
+            for k,v in kwargs.items():
+                g = f.create_group(k)
+                if isinstance(v, (list, tuple)):
+                    for i, each in enumerate(v):
+                        g.create_dataset('%03d'%i, data=each, compression='gzip', chunks=True)
+                else:
+                    g.create_dataset(k, data=v, compression='gzip', chunks=True)
+
+    def h5load(self, filename):
+        d={}
+        with h5py.File(filename, 'r') as f:
+            for k,v in f.items():
+                if v.keys():
+                    d[k]=[]
+                    for kk, v in v.items():
+                        d[k].append(torch.tensor(v[:]))
+                else:
+                    d[k]=torch.tensor(v[:])
+                # print(v.keys())
+            return d
+
     def load_data(self, paths):
         self.data=[]
         self.idx=[]
         if self.train:
-            file = os.path.join(self.feature_save_path, '%3d-%3d.dat'%(self.s, self.s+self.num_data))
+            file = os.path.join(self.feature_save_path, '%d-%d.dat'%(self.s, self.s+self.num_data))
         else:
-            file = os.path.join(self.feature_save_path, 'val_%3d-%3d.dat' % (self.s, self.s + self.num_data))
+            file = os.path.join(self.feature_save_path, 'val_%d-%d.dat' % (self.s, self.s + self.num_data))
 
         if os.path.exists(file):
             with open(file, 'rb') as f:
                 self.data, self.idx=pickle.load(f)
             return
+            # data=self.h5load(file)
+            # self.data, self.idx=data['data'], data['idx']
+            # print(len(self.data), len(self.idx))
+            # print(data)
+            # return
 
         for i, p in tqdm(enumerate(paths)):
             # 读取wav文件
             wave_form, sample_freq = ta.load(p)
 
+            wave_form = self.augment(wave_form.numpy(), sample_rate=sample_freq)
+
             # 计算fbank特征与其delta特征
-            MFCC = ta.compliance.kaldi.fbank(wave_form, sample_frequency=sample_freq, num_mel_bins=40)
-            d1 = ta.functional.compute_deltas(MFCC)
+            fbank = ta.compliance.kaldi.fbank(torch.tensor(wave_form, dtype=torch.float32), sample_frequency=sample_freq, num_mel_bins=40)
+            d1 = ta.functional.compute_deltas(fbank)
             d2 = ta.functional.compute_deltas(d1)
 
-            # 拼接在一起  (L, 39)
-            feature = torch.cat([MFCC, d1, d2], dim=-1)
+            # 拼接在一起  (L, 39 / 120)
+            feature = torch.cat([fbank, d1, d2], dim=-1)
 
             # Normalize acoustic feature
             feature = (feature - feature.mean(dim=0)) / (feature.std(dim=0) + 1e-10)
@@ -197,6 +235,7 @@ class Data(Dataset):
 
         with open(file, 'wb') as f:
             pickle.dump([self.data, self.idx], f)
+        # self.h5save(file, data=self.data, idx=self.idx)
 
 
 
