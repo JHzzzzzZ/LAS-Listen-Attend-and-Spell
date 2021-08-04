@@ -14,21 +14,22 @@ if __name__ == '__main__':
             txt_paths.append('../datasets/ST-CMDS-20170001_1-OS/' + each)
 
     length=len(wav_paths)
-    splits=int(0.9*length)
-    dataset=Data(wav_paths[:splits], txt_paths[:splits], train=True)
-    val_dataset = Data(wav_paths[splits:], txt_paths[splits:], train=False, vocab=dataset.vocab)
+    splits=412*240
+    dataset=Data(wav_paths[:splits], txt_paths[:splits], train=True, num_data=1024)
+    val_dataset = Data(wav_paths[splits:], txt_paths[splits:], train=False, vocab=dataset.vocab, num_data=1024)
 
-    dl=get_dataloader(dataset, 64, True)
+    dl=get_dataloader(dataset, 64, False)
     val_dl = get_dataloader(val_dataset, 128, False)
 
-    model = Model(39, 512, len(dataset.vocab)).to(device)
-    optimizer = Lamb(model.parameters(), lr=0.01, weight_decay=5e-3)
-    schedule=optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=2, eta_min=1e-4, T_mult=2)
+    # model = Model(120, 512, len(dataset.vocab)).to(device)
+    model = torch.load('./models/epoch_27_loss_4.812784729806351_val_loss_4.804531526565552.pth')
+    optimizer = Lamb(model.parameters(), lr=0.001, weight_decay=5e-3)
+    schedule=optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=2, eta_min=1e-4, T_mult=2,)
 
     epochs=50
     length=len(dl)
 
-    for epoch in range(epochs):
+    for epoch in range(27, epochs):
         ls=0
         accs=0
         val_ls=0
@@ -67,7 +68,6 @@ if __name__ == '__main__':
             flag = flag.to(device)
 
             with torch.no_grad():
-
                 y_, loss = model(x,y,flag)
 
                 acc = model.mask_acc(y_, y, flag)
@@ -82,6 +82,6 @@ if __name__ == '__main__':
 
         print(
             f'Epoch {epoch + 1}:\n\tloss:{ls / len(dl)}, acc:{accs / len(dl)}, val_loss:{val_ls / len(val_dl)}, val_acc:{val_accs / len(val_dl)}')
-        torch.save(model, f'./models/loss_{ls/len(dl)}_val_loss_{val_ls/len(val_dl)}.pth')
+        torch.save(model, f'./models/epoch_{epoch+1}_loss_{ls/len(dl)}_val_loss_{val_ls/len(val_dl)}.pth')
 
 

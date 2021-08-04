@@ -1,7 +1,7 @@
 # LAS-Listen-Attend-and-Spell
 ## version 1.0
 ### model
-    encoder: 三层pyramid LSTM
+    encoder: 三层CNN+pyramid LSTM
     attention: 普通attention
     decoder: 两层LSTM+Linear
     
